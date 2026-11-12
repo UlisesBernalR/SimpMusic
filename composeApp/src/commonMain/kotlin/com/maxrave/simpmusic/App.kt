@@ -9,6 +9,10 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation as GestureOrientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +32,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -49,6 +56,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.font.FontWeight
@@ -80,7 +89,12 @@ import com.maxrave.simpmusic.ui.component.LiquidGlassAppBottomNavigationBar
 import com.maxrave.simpmusic.ui.component.LocalAppDialogOpen
 import com.maxrave.simpmusic.ui.component.LocalNowPlayingOpen
 import com.maxrave.simpmusic.ui.component.LocalUserStarted
+import com.maxrave.simpmusic.ui.icon.ArrowBackIosNew
 import com.maxrave.simpmusic.ui.icon.ArrowForwardIos
+import com.maxrave.simpmusic.ui.icon.Fullscreen
+import com.maxrave.simpmusic.ui.icon.FullscreenExit
+import com.maxrave.simpmusic.ui.icon.KeyboardDoubleArrowLeft
+import com.maxrave.simpmusic.ui.icon.KeyboardDoubleArrowRight
 import com.maxrave.simpmusic.ui.icon.SimpIcons
 import com.maxrave.simpmusic.ui.navigation.destination.home.AnalyticsDestination
 import com.maxrave.simpmusic.ui.navigation.destination.home.HomeDestination
@@ -199,6 +213,16 @@ fun App(
     // Fullscreen
     var isInFullscreen by rememberSaveable {
         mutableStateOf(false)
+    }
+
+    // Desktop Now Playing panel (cover + lyrics), adjustable by the user: which side it sits on,
+    // how much of the window it takes, and whether it covers the whole window.
+    var nowPlayingOnLeft by rememberSaveable { mutableStateOf(false) }
+    var nowPlayingMaximized by rememberSaveable { mutableStateOf(false) }
+    var nowPlayingWidthFraction by rememberSaveable { mutableStateOf(0.35f) }
+    // Closing the panel also leaves the maximized state, so it never reopens covering everything.
+    LaunchedEffect(isShowNowPlaylistScreen) {
+        if (!isShowNowPlaylistScreen) nowPlayingMaximized = false
     }
 
     var isNavBarVisible by rememberSaveable {
@@ -678,14 +702,154 @@ fun App(
                             )
                         }
                     }
+                    val showNowPlayingPanel = isTablet && isTabletLandscape && !isInFullscreen
+                    // Maximized: the content area (sidebar, pages, capsule player) steps aside entirely.
+                    val nowPlayingCoversWindow = showNowPlayingPanel && isShowNowPlaylistScreen && nowPlayingMaximized
+                    val nowPlayingHandle: @Composable () -> Unit = {
+                        val density = LocalDensity.current
+                        val windowWidthPx = LocalWindowInfo.current.containerSize.width
+                        val dragState =
+                            rememberDraggableState { deltaPx ->
+                                val usablePx = (windowWidthPx - with(density) { 80.dp.toPx() }).coerceAtLeast(1f)
+                                // Panel on the right: dragging the strip left widens it. On the left: the opposite.
+                                val signedPx = if (nowPlayingOnLeft) deltaPx else -deltaPx
+                                nowPlayingWidthFraction = (nowPlayingWidthFraction + signedPx / usablePx).coerceIn(0.2f, 0.7f)
+                            }
+                        Column(
+                            modifier =
+                                Modifier
+                                    .fillMaxHeight()
+                                    .width(24.dp)
+                                    .then(
+                                        if (nowPlayingMaximized) {
+                                            Modifier
+                                        } else {
+                                            Modifier.draggable(dragState, GestureOrientation.Horizontal)
+                                        },
+                                    ),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            IconButton(
+                                onClick = { nowPlayingMaximized = !nowPlayingMaximized },
+                                modifier = Modifier.size(24.dp),
+                            ) {
+                                Icon(
+                                    imageVector = if (nowPlayingMaximized) SimpIcons.FullscreenExit else SimpIcons.Fullscreen,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            IconButton(
+                                onClick = { nowPlayingOnLeft = !nowPlayingOnLeft },
+                                modifier = Modifier.size(24.dp),
+                            ) {
+                                Icon(
+                                    imageVector =
+                                        if (nowPlayingOnLeft) SimpIcons.KeyboardDoubleArrowRight else SimpIcons.KeyboardDoubleArrowLeft,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                    val nowPlayingPanel: @Composable () -> Unit = {
+                        if (showNowPlayingPanel) {
+                            AnimatedVisibility(
+                                isShowNowPlaylistScreen,
+                                enter = expandHorizontally() + fadeIn(),
+                                exit = fadeOut() + shrinkHorizontally(),
+                            ) {
+                                Row(
+                                    Modifier
+                                        .fillMaxHeight()
+                                        .then(
+                                            if (nowPlayingMaximized) {
+                                                // Maximized: the content area is gone, so the panel takes the whole Row.
+                                                Modifier.fillMaxWidth()
+                                            } else {
+                                                // The width Now Playing has always had: `fillMaxWidth(0.35f)` of what the
+                                                // 80dp NavigationRail left in this Row. The rail and the sidebar now sit
+                                                // inside the weighted Box, so that share is taken by hand from the Row's
+                                                // own width; otherwise it would follow the sidebar. On Desktop it is 8dp
+                                                // less, the spacer it no longer has, so the card keeps its exact size.
+                                                // The share is no longer fixed at 0.35: the user drags it.
+                                                Modifier.layout { measurable, constraints ->
+                                                    val width =
+                                                        (
+                                                            ((constraints.maxWidth - 80.dp.roundToPx()) * nowPlayingWidthFraction).roundToInt() -
+                                                                if (isDesktopShell) 8.dp.roundToPx() else 0
+                                                        ).coerceIn(0, constraints.maxWidth)
+                                                    val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+                                                    layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
+                                                }
+                                            },
+                                        ),
+                                ) {
+                                    // Drag strip on the side that faces the content: drag to resize,
+                                    // buttons to maximize and to swap sides.
+                                    if (!nowPlayingOnLeft) nowPlayingHandle()
+                                    // On Desktop the content panel's own 8dp end padding is already the gap,
+                                    // the same 8dp it keeps from the sidebar; a spacer here doubled it.
+                                    if (!isDesktopShell) Spacer(Modifier.width(8.dp))
+                                    Box(
+                                        Modifier
+                                            .weight(1f)
+                                            .padding(
+                                                innerPadding.copy(
+                                                    start = 0.dp,
+                                                    top = 0.dp,
+                                                    bottom = 0.dp,
+                                                ),
+                                            ).then(
+                                                // Matches the inset of the content panel so the two
+                                                // read as a pair of floating cards, not one panel
+                                                // with a seam down the middle.
+                                                if (isDesktopShell) {
+                                                    Modifier.padding(
+                                                        start = if (nowPlayingOnLeft) 8.dp else 0.dp,
+                                                        top = 8.dp,
+                                                        end = if (nowPlayingOnLeft) 0.dp else 8.dp,
+                                                        bottom = 8.dp,
+                                                    )
+                                                } else {
+                                                    Modifier
+                                                },
+                                            ).clip(
+                                                RoundedCornerShape(12.dp),
+                                            ).then(
+                                                if (isDesktopShell) {
+                                                    Modifier.background(desktopPanel)
+                                                } else {
+                                                    Modifier
+                                                },
+                                            ),
+                                    ) {
+                                        ForceDarkContent {
+                                            NowPlayingScreenContent(
+                                                navController = navController,
+                                                sharedViewModel = viewModel,
+                                                isExpanded = true,
+                                                dismissIcon = if (nowPlayingOnLeft) SimpIcons.ArrowBackIosNew else SimpIcons.ArrowForwardIos,
+                                            ) {
+                                                isShowNowPlaylistScreen = false
+                                            }
+                                        }
+                                    }
+                                    if (nowPlayingOnLeft) nowPlayingHandle()
+                                }
+                            }
+                        }
+                    }
                     Row(
                         Modifier.fillMaxSize(),
                     ) {
+                        if (nowPlayingOnLeft) nowPlayingPanel()
                         // Everything left of Now Playing. On Desktop the capsule player sits on the centre of
                         // this whole area, sidebar included, so it lives here rather than in the content panel,
                         // which is both narrower than the capsule and clipped; and the area is what its glass
                         // records, so the part over the sidebar refracts the sidebar instead of nothing.
-                        Box(
+                        if (!nowPlayingCoversWindow) Box(
                             Modifier
                                 .weight(1f)
                                 .fillMaxHeight(),
@@ -789,74 +953,7 @@ fun App(
                                 tabletMiniPlayer(Modifier.padding(innerPadding).align(Alignment.BottomCenter))
                             }
                         }
-                        if (isTablet && isTabletLandscape && !isInFullscreen) {
-                            AnimatedVisibility(
-                                isShowNowPlaylistScreen,
-                                enter = expandHorizontally() + fadeIn(),
-                                exit = fadeOut() + shrinkHorizontally(),
-                            ) {
-                                Row(
-                                    Modifier
-                                        .fillMaxHeight()
-                                        // The width Now Playing has always had: `fillMaxWidth(0.35f)` of what the
-                                        // 80dp NavigationRail left in this Row. The rail and the sidebar now sit
-                                        // inside the weighted Box, so that share is taken by hand from the Row's
-                                        // own width; otherwise it would follow the sidebar. On Desktop it is 8dp
-                                        // less, the spacer it no longer has, so the card keeps its exact size.
-                                        .layout { measurable, constraints ->
-                                            val width =
-                                                (
-                                                    ((constraints.maxWidth - 80.dp.roundToPx()) * 0.35f).roundToInt() -
-                                                        if (isDesktopShell) 8.dp.roundToPx() else 0
-                                                ).coerceIn(0, constraints.maxWidth)
-                                            val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
-                                            layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
-                                        },
-                                ) {
-                                    // On Desktop the content panel's own 8dp end padding is already the gap,
-                                    // the same 8dp it keeps from the sidebar; a spacer here doubled it.
-                                    if (!isDesktopShell) Spacer(Modifier.width(8.dp))
-                                    Box(
-                                        Modifier
-                                            .padding(
-                                                innerPadding.copy(
-                                                    start = 0.dp,
-                                                    top = 0.dp,
-                                                    bottom = 0.dp,
-                                                ),
-                                            ).then(
-                                                // Matches the inset of the content panel so the two
-                                                // read as a pair of floating cards, not one panel
-                                                // with a seam down the middle.
-                                                if (isDesktopShell) {
-                                                    Modifier.padding(top = 8.dp, end = 8.dp, bottom = 8.dp)
-                                                } else {
-                                                    Modifier
-                                                },
-                                            ).clip(
-                                                RoundedCornerShape(12.dp),
-                                            ).then(
-                                                if (isDesktopShell) {
-                                                    Modifier.background(desktopPanel)
-                                                } else {
-                                                    Modifier
-                                                },
-                                            ),
-                                    ) {
-                                        ForceDarkContent {
-                                            NowPlayingScreenContent(
-                                                navController = navController,
-                                                sharedViewModel = viewModel,
-                                                isExpanded = true,
-                                                dismissIcon = SimpIcons.ArrowForwardIos,
-                                            ) {
-                                                isShowNowPlaylistScreen = false
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        if (!nowPlayingOnLeft) nowPlayingPanel()
                     }
                 }
 
